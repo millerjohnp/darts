@@ -62,10 +62,11 @@ def main():
   np.random.seed(args.seed)
   random.seed(args.seed)
   torch.cuda.set_device(args.gpu)
-  cudnn.benchmark = False
+  # Don't use deterministic execution to speed up training times.
+  cudnn.benchmark = True
   torch.manual_seed(args.seed)
-  cudnn.enabled=True
-  cudnn.deterministic=True
+  cudnn.enabled = True
+  cudnn.deterministic = False
   torch.cuda.manual_seed(args.seed)
   logging.info('gpu device = %d' % args.gpu)
   logging.info("args = %s", args)
@@ -107,10 +108,11 @@ def main():
     train_acc, train_obj = train(train_queue, model, criterion, optimizer)
     logging.info('train_acc %f', train_acc)
 
-    valid_acc, valid_obj = infer(valid_queue, model, criterion)
+    valid_acc, valid_obj, predictions = infer(valid_queue, model, criterion)
     logging.info('valid_acc %f', valid_acc)
 
     utils.save(model, os.path.join(args.save, 'weights.pt'))
+    utils.save_predictions(predictions, os.path.join(args.save, 'predictions_{}.npy'.format(epoch)))
 
 
 def train(train_queue, model, criterion, optimizer):
@@ -121,7 +123,7 @@ def train(train_queue, model, criterion, optimizer):
 
   for step, (input, target) in enumerate(train_queue):
     input = Variable(input).cuda()
-    target = Variable(target).cuda(async=True)
+    target = Variable(target).cuda()
 
     optimizer.zero_grad()
     logits, logits_aux = model(input)
@@ -133,11 +135,11 @@ def train(train_queue, model, criterion, optimizer):
     nn.utils.clip_grad_norm(model.parameters(), args.grad_clip)
     optimizer.step()
 
-    prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
+    (prec1, prec5), _ = utils.accuracy(logits, target, topk=(1, 5))
     n = input.size(0)
-    objs.update(loss.data[0], n)
-    top1.update(prec1.data[0], n)
-    top5.update(prec5.data[0], n)
+    objs.update(loss.data.item(), n)
+    top1.update(prec1.data.item(), n)
+    top5.update(prec5.data.item(), n)
 
     if step % args.report_freq == 0:
       logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
@@ -150,24 +152,29 @@ def infer(valid_queue, model, criterion):
   top1 = utils.AvgrageMeter()
   top5 = utils.AvgrageMeter()
   model.eval()
-
+    
+  prediction_vectors = np.array([])
   for step, (input, target) in enumerate(valid_queue):
-    input = Variable(input, volatile=True).cuda()
-    target = Variable(target, volatile=True).cuda(async=True)
+    with torch.no_grad():
+        input = Variable(input).cuda()
+        target = Variable(target).cuda()
 
-    logits, _ = model(input)
-    loss = criterion(logits, target)
+        logits, _ = model(input)
+        loss = criterion(logits, target)
 
-    prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-    n = input.size(0)
-    objs.update(loss.data[0], n)
-    top1.update(prec1.data[0], n)
-    top5.update(prec5.data[0], n)
+        (prec1, prec5), preds = utils.accuracy(logits, target, topk=(1, 5))
 
-    if step % args.report_freq == 0:
-      logging.info('valid %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+        # Track all predictions
+        prediction_vectors = np.append(prediction_vectors, preds.cpu().data.numpy())
+        n = input.size(0)
+        objs.update(loss.data.item(), n)
+        top1.update(prec1.data.item(), n)
+        top5.update(prec5.data.item(), n)
 
-  return top1.avg, objs.avg
+        if step % args.report_freq == 0:
+            logging.info('valid %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+
+  return top1.avg, objs.avg, prediction_vectors
 
 
 if __name__ == '__main__':

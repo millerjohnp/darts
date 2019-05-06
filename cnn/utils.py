@@ -34,7 +34,7 @@ def accuracy(output, target, topk=(1,)):
   for k in topk:
     correct_k = correct[:k].view(-1).float().sum(0)
     res.append(correct_k.mul_(100.0/batch_size))
-  return res
+  return res, pred
 
 
 class Cutout(object):
@@ -94,6 +94,8 @@ def save_checkpoint(state, is_best, save):
 def save(model, model_path):
   torch.save(model.state_dict(), model_path)
 
+def save_predictions(predictions, path):
+    np.save(path, predictions)
 
 def load(model, model_path):
   model.load_state_dict(torch.load(model_path))
